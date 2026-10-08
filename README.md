@@ -179,10 +179,12 @@ flowchart TD
 ### Desktop Views
 
 #### Hospital Operations Dashboard
+
 Real-time operational dashboard with metrics, caseload distribution, specialization breakdown, and registration velocity:
 ![Hospital Operations Dashboard](./public/screenshots/dashboard-desktop.png)
 
 #### Doctors Directory & Caseload Management
+
 Full doctor table with specialization badges, hospital affiliations, patient counts, and action buttons:
 ![Doctors Directory](./public/screenshots/doctors-desktop.png)
 
@@ -190,66 +192,8 @@ Full doctor table with specialization badges, hospital affiliations, patient cou
 
 ### Mobile Responsive Views
 
-| Patients Management (Mobile) | Doctors Directory (Mobile) |
-| :---: | :---: |
+|                 Patients Management (Mobile)                 |                 Doctors Directory (Mobile)                 |
+| :----------------------------------------------------------: | :--------------------------------------------------------: |
 | ![Patients Mobile](./public/screenshots/patients-mobile.png) | ![Doctors Mobile](./public/screenshots/doctors-mobile.png) |
 
 ---
-
-## Deep Dive: Key Architectural Decisions
-
-### 1. URL-Driven State & React Server Components vs. Global Client State Management (Why We Chose URL State over Redux / Context API)
-
-#### The Problem
-In clinical workflows (like the Doctor Directory and Patient Registry shown above), doctors and administrative staff constantly filter records by:
-- Attending doctor & hospital affiliations
-- Clinical triage condition (`Critical`, `Serious`, `Stable`, `Discharged`)
-- Gender, blood group, and registration date ranges
-- Paginated record browsing
-
-In many traditional React apps, developers reach for **Redux Toolkit** or **React Context API** to manage these filters. However, this creates severe problems in a medical administration portal:
-1. **Lost State on Reload & No Shareability**: Redux state lives only in client memory. If an administrator applies 4 filters, finds a critical patient, and sends the browser URL to a colleague—or simply reloads the page—all filter state is lost.
-2. **Client Bundle Bloat**: Redux adds 35–50 KB of minified JavaScript (store, slices, reducers, dispatchers, action creators) just to synchronize temporary filter controls.
-3. **Hydration Waterfalls & Render Lag**: Client state forces components to mount, read the store, and trigger client-side `fetch()` requests, displaying jarring loading spinners on every filter change.
-
-#### Why We Chose URL-Driven State + React Server Components
-Instead of Redux or Context API, we treat the **Browser URL Query String** (`?gender=Female&condition=Critical&page=2`) as the **Single Source of Truth**:
-- **0 KB Store Overhead**: Native browser query strings require zero client state libraries.
-- **Deep Linking & Bookmarking**: Medical staff can copy the exact URL or bookmark a filtered view and share it directly with doctors.
-- **Instant Server Rendering (SSR)**: Next.js Server Components receive search parameters directly via `page.js` props, query the backend Express API with Bearer tokens server-to-server, and stream pre-rendered HTML within `Suspense` skeletons.
-
-#### Comparison Matrix
-
-| Architectural Criterion | URL-Driven State + Server Components (Our Choice) | Global Client State (Redux / Context API) |
-| :--- | :--- | :--- |
-| **Client JS Footprint** | **0 KB** (built-in URL primitives) | **35–50 KB** (Redux, slices, reducers) |
-| **State Sharing & Bookmarking** | **Native** (exact filters and pages live in URL) | **Requires manual sync** (lost on refresh by default) |
-| **Initial Paint (FCP)** | **Fast** (HTML pre-rendered on server with data) | **Slow** (blank layout $\rightarrow$ client fetch on mount) |
-| **Complexity & Maintenance** | **Minimal** (`useSearchParams` & `router.replace`) | **High** (actions, reducers, store configuration) |
-
----
-
-### 2. Cookie-Based JWT Auth with Edge Proxy Route Guards vs. Client-Only LocalStorage Auth
-
-#### The Problem
-A healthcare portal manages sensitive clinical data. Unauthorized users must never see patient records or hospital metrics.
-
-In standard React SPAs, authentication tokens are saved in browser `localStorage`. However, client-only `localStorage` authentication has critical vulnerabilities and performance flaws in modern server-rendered architectures:
-1. **Flash of Unauthenticated Content (FOUC)**: With `localStorage`, the browser must download the protected page, mount the React application, execute a `useEffect` hook to read `localStorage.getItem('token')`, and only then trigger a redirect. Users experience a jarring flash of protected UI or blank screens before being redirected.
-2. **Incompatibility with Server Components (SSR)**: React Server Components execute on the server where `window.localStorage` does not exist. Server Components cannot access the token to make authenticated queries to the backend during SSR.
-3. **Cross-Site Scripting (XSS) Vulnerability**: Tokens stored in `localStorage` can be stolen by any script injected via third-party dependencies.
-
-#### Why We Chose Cookie-Based Sessions + Edge Proxy Route Guards
-We implemented HTTP cookie session tokens (`token`) combined with Next.js Edge Proxy Middleware (`src/proxy.js`):
-- **Edge-Level Route Interception (Zero FOUC)**: Next.js `proxy.js` intercepts incoming HTTP requests *before* HTML generation starts. An unauthenticated request to `/dashboard`, `/doctors`, or `/patients` receives an immediate HTTP `307 Redirect` to `/login?callbackUrl=...`. Unauthorized users never receive a single byte of protected UI.
-- **Isomorphic Server-Side Fetching**: Because cookies are automatically included in HTTP request headers, Server Components access the session token directly using `cookies()` from `next/headers` and forward it as `Authorization: Bearer <token>` directly to the Express REST API.
-- **Clean Session Lifecycle**: Logging out cleanly clears the cookie across both client and server contexts without residual orphaned storage.
-
-#### Comparison Matrix
-
-| Security & Runtime Criterion | Cookie Sessions + Edge Proxy (Our Choice) | Client LocalStorage Auth |
-| :--- | :--- | :--- |
-| **Route Protection Timing** | **At the Edge / Server** before HTML generation | **On Client Mount** inside `useEffect` hook |
-| **User Experience** | **Instant 307 Redirect** (Zero layout flash / FOUC) | **Flashes loading spinner** before redirecting |
-| **Server Component (SSR) Support** | **Full** (Token accessible via `cookies()` in SSR) | **Impossible** (`window.localStorage` unavailable on server) |
-| **Token Exposure** | **Scoped HTTP Cookie** | **Accessible to any script** reading `localStorage` |
